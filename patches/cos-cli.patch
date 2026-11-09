@@ -29,7 +29,7 @@ index 4e0495e..686a4e4 100644
                  if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                      info.title = Some(title);
 diff --git a/src/main.rs b/src/main.rs
-index dec5d28..6906543 100644
+index dec5d28..9cd2076 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -21,6 +21,8 @@ Commands:
@@ -41,7 +41,7 @@ index dec5d28..6906543 100644
  
  Options for 'move':
    -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
-@@ -47,6 +49,34 @@ Options for 'state':
+@@ -47,6 +49,36 @@ Options for 'state':
    --sticky
    --unsticky
  
@@ -49,7 +49,8 @@ index dec5d28..6906543 100644
 +  -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
 +  -i, --index <INDEX>           The Application index from 'info' command
 +  --wait <SECONDS>              Wait for the app to appear (optional, only for --app-id)
-+  --size <W>x<H>                Outer window size in logical pixels
++  --size <W>x<H>                Outer window size in logical pixels, or a percentage
++                                of the usable area per axis (e.g. 96%x92%)
 +  --pos <X>,<Y>|center|keep     Position relative to the usable area.
 +                                'keep' (default) resizes around the current center,
 +                                'center' centers it in the usable area.
@@ -58,7 +59,8 @@ index dec5d28..6906543 100644
 +Options for 'launch' (cos-cli launch [OPTIONS] -- <COMMAND> [ARGS...]):
 +  -a, --app-id <ID>             App ID of the window to wait for (partial match).
 +                                If omitted, the first new window of any app is used.
-+  --size <W>x<H>                Outer window size in logical pixels
++  --size <W>x<H>                Outer window size in logical pixels, or a percentage
++                                of the usable area per axis (e.g. 96%x92%)
 +  --pos <X>,<Y>|center|keep     Position relative to the usable area.
 +                                Default: center (ignores COSMIC's cascaded placement).
 +  --timeout <SECONDS>           How long to wait for the new window (default: 30)
@@ -76,18 +78,19 @@ index dec5d28..6906543 100644
  Options for 'info':
    --json                        Output in JSON format
  
-@@ -62,6 +92,10 @@ Examples:
+@@ -62,6 +94,11 @@ Examples:
    cos-cli activate -i 0
    cos-cli state -i 0 --maximize
    cos-cli state --app-id firefox --sticky --fullscreen
 +  cos-cli geometry -a firefox --size 1280x800
 +  cos-cli geometry -i 0 --size 1280x800 --pos 100,50
++  cos-cli geometry -a fresh-editor --size 96%x92% --pos center
 +  cos-cli launch -a org.gnome.gedit --size 900x700 -- gedit
 +  cos-cli launch -a firefox --size 1400x900 --follow 30 -- firefox
  ";
  
  struct CliError(String);
-@@ -103,6 +137,7 @@ impl From<&str> for CliError {
+@@ -103,6 +140,7 @@ impl From<&str> for CliError {
  }
  
  struct AppState {
@@ -95,7 +98,7 @@ index dec5d28..6906543 100644
      workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
      cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
      outputs: Vec<(wl_output::WlOutput, String)>,
-@@ -218,6 +253,130 @@ impl AppFinderArgs for StateArgs {
+@@ -218,6 +256,135 @@ impl AppFinderArgs for StateArgs {
      }
  }
  
@@ -156,23 +159,28 @@ index dec5d28..6906543 100644
 +    manager.set_geometry(handle, args.pos.0, args.pos.1, args.size.0, args.size.1);
 +}
 +
-+/// "1280x800" を (1280, 800) に変換する
++/// "1280x800" を (1280, 800) に変換する。"96%" のような割合はプロトコル上の負の値(-96)にする
 +fn parse_size(v: &str) -> Result<(i32, i32), String> {
++    fn axis(a: &str, v: &str) -> Result<i32, String> {
++        let a = a.trim();
++        if let Some(p) = a.strip_suffix('%') {
++            match p.trim().parse::<i32>() {
++                Ok(p) if (1..=100).contains(&p) => Ok(-p),
++                _ => Err(format!("Invalid percentage (1-100%): {v}")),
++            }
++        } else {
++            match a.parse::<i32>() {
++                Ok(n) if n > 0 => Ok(n),
++                _ => Err(format!(
++                    "Invalid size (expected WxH, e.g. 1280x800 or 96%x92%): {v}"
++                )),
++            }
++        }
++    }
 +    let (w, h) = v
 +        .split_once(['x', 'X'])
 +        .ok_or_else(|| format!("Invalid size (expected WxH): {v}"))?;
-+    let w: i32 = w
-+        .trim()
-+        .parse()
-+        .map_err(|_| format!("Invalid width: {v}"))?;
-+    let h: i32 = h
-+        .trim()
-+        .parse()
-+        .map_err(|_| format!("Invalid height: {v}"))?;
-+    if w <= 0 || h <= 0 {
-+        return Err(format!("Size must be positive: {v}"));
-+    }
-+    Ok((w, h))
++    Ok((axis(w, v)?, axis(h, v)?))
 +}
 +
 +/// プロトコル上の特別な位置の値
@@ -226,7 +234,7 @@ index dec5d28..6906543 100644
  #[derive(Debug)]
  struct InfoArgs {
      json: bool,
-@@ -228,6 +387,8 @@ enum Command {
+@@ -228,6 +395,8 @@ enum Command {
      Move(MoveArgs),
      Activate(ActivateArgs),
      State(StateArgs),
@@ -235,7 +243,7 @@ index dec5d28..6906543 100644
  }
  
  fn find_apps<T: AppFinderArgs>(
-@@ -284,7 +445,15 @@ fn find_apps<T: AppFinderArgs>(
+@@ -284,7 +453,15 @@ fn find_apps<T: AppFinderArgs>(
  
  fn main() -> Result<(), Box<dyn std::error::Error>> {
      const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -252,7 +260,7 @@ index dec5d28..6906543 100644
      if pargs.contains(["-v", "--version"]) {
          println!("Version: {}", VERSION);
          return Ok(());
-@@ -374,6 +543,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -374,6 +551,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              Command::State(args)
          }
@@ -324,7 +332,7 @@ index dec5d28..6906543 100644
          Some("help") | None => {
              println!("{HELP}");
              return Ok(());
-@@ -391,6 +625,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -391,6 +633,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
      let qh = event_queue.handle();
  
      let mut state = AppState {
@@ -332,7 +340,7 @@ index dec5d28..6906543 100644
          cosmic_toplevel_manager: None,
          workspace_group: Vec::new(),
          apps: Vec::new(),
-@@ -628,6 +863,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -628,6 +871,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              conn.flush()?;
          }

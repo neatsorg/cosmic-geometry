@@ -22,8 +22,9 @@ cos-cli launch -a firefox --size 1400x900 -- firefox
 # メニュー・ランチャーから起動したときにも効くよう .desktop を書き換える
 cos-desktop-size firefox 1400x900 -- --follow 60
 
-# 開いている窓のサイズを変える
+# 開いている窓のサイズを変える(画面に対する割合でも指定できる)
 cos-cli geometry -a firefox --size 1280x800
+cos-cli geometry -a firefox --size 96%x92% --pos center
 ```
 
 ## しくみ
@@ -48,6 +49,7 @@ set_geometry(toplevel, x, y, width, height)   # since 5
 ```
 
 - `width` / `height` は COSMIC が管理する外枠のサイズ(COSMIC がタイトルバーを描く窓はタイトルバー込み)。
+  負の値 `-N` は、利用可能領域のその軸の N%(1〜100)。`0` ならリクエストは無視される。
 - `x` / `y` は、窓がいる出力の利用可能領域(パネル等を除く)からの相対座標。軸ごとに、
   `-1` なら現在の中心を保ったままサイズを変え、`-2` 以下なら利用可能領域の中央に置く。
 - 窓の最小・最大サイズと利用可能領域に収まるよう調整される。
@@ -119,6 +121,7 @@ cos-cli launch [-a APP_ID] --size WxH [--pos X,Y|center|keep] [--follow 秒]
                [--timeout 秒] [--reapply ミリ秒] [--keep-maximized] -- コマンド [引数...]
 ```
 
+- `--size` はピクセル(`1400x900`)か、利用可能領域に対する割合(`96%x92%`、軸ごとに混在可)。
 - 起動前から開いていた窓は対象外。新しく現れた(app_id が部分一致する)窓にだけ適用します。
 - `--pos` の既定は `center`(利用可能領域の中央)。COSMIC は新しい窓を直前の窓から
   少しずらして置くので、そのままでは中央に来ないためです。

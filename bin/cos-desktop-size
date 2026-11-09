@@ -58,7 +58,7 @@ pos=""
 if [[ $# -gt 0 && "$1" != "--" ]]; then pos="$1"; shift; fi
 [[ "${1:-}" == "--" ]] && shift
 extra=("$@")
-[[ "$size" =~ ^[0-9]+[xX][0-9]+$ ]] || die "サイズの形式が違います: $size"
+[[ "$size" =~ ^[0-9]+%?[xX][0-9]+%?$ ]] || die "サイズの形式が違います: $size(例: 1400x900、96%x92%)"
 axis_re='([0-9]+|center|keep|c|k)'
 [[ -z "$pos" || "$pos" =~ ^$axis_re(,$axis_re)?$ ]] || die "位置の形式が違います: $pos(X,Y / center / keep)"
 

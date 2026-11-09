@@ -1,5 +1,5 @@
 diff --git a/unstable/cosmic-toplevel-management-unstable-v1.xml b/unstable/cosmic-toplevel-management-unstable-v1.xml
-index a1c7b3c2e1..7576bad0ce 100644
+index a1c7b3c2e1..26691d648d 100644
 --- a/unstable/cosmic-toplevel-management-unstable-v1.xml
 +++ b/unstable/cosmic-toplevel-management-unstable-v1.xml
 @@ -28,7 +28,7 @@
@@ -19,7 +19,7 @@ index a1c7b3c2e1..7576bad0ce 100644
      </enum>
  
      <event name="capabilities">
-@@ -204,6 +205,29 @@
+@@ -204,6 +205,31 @@
        <arg name="output" type="object" interface="wl_output"/>
      </request>
  
@@ -28,6 +28,8 @@ index a1c7b3c2e1..7576bad0ce 100644
 +        Request that a floating toplevel be resized to the given size and
 +        optionally moved. The size is the outer size of the window as managed
 +        by the compositor (including server-side decorations, if any).
++        A negative width or height -N means N percent (1 to 100) of the usable
++        area on that axis. A width or height of 0 makes the request a no-op.
 +
 +        x and y are relative to the usable area (excluding panels and other
 +        exclusive zones) of the output the toplevel is currently on. For each

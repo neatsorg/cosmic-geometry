@@ -1,8 +1,8 @@
 diff --git a/src/shell/layout/floating/mod.rs b/src/shell/layout/floating/mod.rs
-index 95d7264..0b602cf 100644
+index 95d7264..06ee235 100644
 --- a/src/shell/layout/floating/mod.rs
 +++ b/src/shell/layout/floating/mod.rs
-@@ -1669,6 +1669,82 @@ impl FloatingLayout {
+@@ -1669,6 +1669,92 @@ impl FloatingLayout {
          }
      }
  
@@ -34,8 +34,18 @@ index 95d7264..0b602cf 100644
 +        let min_h = min_size.map(|s| s.h).filter(|h| *h > 0).unwrap_or(1);
 +        let max_w = max_size.map(|s| s.w).filter(|w| *w > 0).unwrap_or(i32::MAX);
 +        let max_h = max_size.map(|s| s.h).filter(|h| *h > 0).unwrap_or(i32::MAX);
-+        let w = size.w.clamp(min_w, max_w.max(min_w)).min(zone.size.w);
-+        let h = size.h.clamp(min_h, max_h.max(min_h)).min(zone.size.h);
++        // 負の値 -N は利用可能領域の N%(1〜100)
++        let percent = |v: i32, total: i32| {
++            if v < 0 {
++                (total as i64 * (v.unsigned_abs().min(100) as i64) / 100) as i32
++            } else {
++                v
++            }
++        };
++        let req_w = percent(size.w, zone.size.w);
++        let req_h = percent(size.h, zone.size.h);
++        let w = req_w.clamp(min_w, max_w.max(min_w)).min(zone.size.w);
++        let h = req_h.clamp(min_h, max_h.max(min_h)).min(zone.size.h);
 +
 +        // 中心の基準にするサイズ。表示直後はアプリの描画(committed)がまだ古いサイズのことがあるので、
 +        // コンポジタが最後に指示したサイズ(pending)を優先する
@@ -85,7 +95,7 @@ index 95d7264..0b602cf 100644
      pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
          *mapped.floating_tiled.lock().unwrap() = Some(*corners);
          mapped.set_tiled(true);
-@@ -1691,3 +1767,25 @@ impl FloatingLayout {
+@@ -1691,3 +1777,25 @@ impl FloatingLayout {
          (g.0 as i32, g.1 as i32)
      }
  }
@@ -173,7 +183,7 @@ index b1616bc..fa441cd 100644
          &mut self,
          _dh: &DisplayHandle,
 diff --git a/src/wayland/protocols/toplevel_management.rs b/src/wayland/protocols/toplevel_management.rs
-index f252fde..630397a 100644
+index f252fde..870fd40 100644
 --- a/src/wayland/protocols/toplevel_management.rs
 +++ b/src/wayland/protocols/toplevel_management.rs
 @@ -62,6 +62,17 @@ where
@@ -228,9 +238,9 @@ index f252fde..630397a 100644
 +                width,
 +                height,
 +            } => {
-+                // 幅・高さが正でなければ無視する
-+                if width > 0
-+                    && height > 0
++                // 幅・高さが 0 なら無視する(負の値は利用可能領域に対する割合)
++                if width != 0
++                    && height != 0
 +                    && let Some(window) = window_from_handle(toplevel)
 +                {
 +                    state.set_geometry(dh, &window, x, y, width, height);
