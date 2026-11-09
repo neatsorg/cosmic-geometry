@@ -29,7 +29,7 @@ index 4e0495e..686a4e4 100644
                  if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                      info.title = Some(title);
 diff --git a/src/main.rs b/src/main.rs
-index dec5d28..9cd2076 100644
+index dec5d28..34418a9 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -21,6 +21,8 @@ Commands:
@@ -41,7 +41,7 @@ index dec5d28..9cd2076 100644
  
  Options for 'move':
    -a, --app-id <ID>             The Application ID (partial match, case-insensitive)
-@@ -47,6 +49,36 @@ Options for 'state':
+@@ -47,6 +49,40 @@ Options for 'state':
    --sticky
    --unsticky
  
@@ -75,10 +75,14 @@ index dec5d28..9cd2076 100644
 +  --reapply <MS>                Apply once more after this delay, in case the app
 +                                resizes itself after mapping (default: 800, 0 = off)
 +
++Exit status: 0 = success, 3 = the compositor does not support set_geometry
++(not the patched cosmic-comp), 1 = other errors. 'launch' always starts the
++command, even if the window cannot be resized (it then exits with 0).
++
  Options for 'info':
    --json                        Output in JSON format
  
-@@ -62,6 +94,11 @@ Examples:
+@@ -62,6 +98,11 @@ Examples:
    cos-cli activate -i 0
    cos-cli state -i 0 --maximize
    cos-cli state --app-id firefox --sticky --fullscreen
@@ -90,7 +94,7 @@ index dec5d28..9cd2076 100644
  ";
  
  struct CliError(String);
-@@ -103,6 +140,7 @@ impl From<&str> for CliError {
+@@ -103,6 +144,7 @@ impl From<&str> for CliError {
  }
  
  struct AppState {
@@ -98,7 +102,7 @@ index dec5d28..9cd2076 100644
      workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
      cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
      outputs: Vec<(wl_output::WlOutput, String)>,
-@@ -218,6 +256,135 @@ impl AppFinderArgs for StateArgs {
+@@ -218,6 +260,193 @@ impl AppFinderArgs for StateArgs {
      }
  }
  
@@ -213,28 +217,86 @@ index dec5d28..9cd2076 100644
 +    }
 +}
 +
++/// コンポジタが set_geometry に対応していない(終了コード 3 で区別する)
++#[derive(Debug)]
++struct Unsupported(String);
++
++impl fmt::Display for Unsupported {
++    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
++        f.write_str(&self.0)
++    }
++}
++
++impl Error for Unsupported {}
++
++/// 終了コード: コンポジタが set_geometry に未対応
++const EXIT_UNSUPPORTED: i32 = 3;
++
++/// launch が対象のコマンドを起動しようとしたか(エラー時に二重起動しないため)
++static LAUNCH_SPAWN_ATTEMPTED: std::sync::atomic::AtomicBool =
++    std::sync::atomic::AtomicBool::new(false);
++
 +/// manager が set_geometry(v5)に対応しているか確認して返す
 +fn geometry_manager(
 +    state: &AppState,
 +) -> Result<&zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, Box<dyn Error>> {
 +    let Some(manager) = &state.cosmic_toplevel_manager else {
-+        return Err(CliError::new(
++        return Err(Box::new(Unsupported(
 +            "Compositor does not support toplevel management protocol.".into(),
-+        ));
++        )));
 +    };
 +    if state.manager_version < 5 {
-+        return Err(CliError::new(format!(
++        return Err(Box::new(Unsupported(format!(
 +            "Compositor's toplevel manager is version {}, set_geometry needs version 5 (patched cosmic-comp).",
 +            state.manager_version
-+        )));
++        ))));
 +    }
 +    Ok(manager)
++}
++
++/// `cos-cli launch ... -- <コマンド>` の <コマンド> 部分(なければ None)
++fn launch_command_from_args() -> Option<Vec<std::ffi::OsString>> {
++    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
++    if args.first().is_none_or(|a| a != "launch") {
++        return None;
++    }
++    let i = args.iter().position(|a| a == "--")?;
++    let cmd = args[i + 1..].to_vec();
++    (!cmd.is_empty()).then_some(cmd)
++}
++
++fn main() {
++    let Err(e) = run() else {
++        return;
++    };
++    // launch はサイズを当てられなくても(未対応のコンポジタ、引数の誤り、Wayland に
++    // つながらない等)、アプリ自体は必ず起動する。.desktop から呼ばれるため、ここで
++    // 止まるとアプリがメニューから起動できなくなる
++    if !LAUNCH_SPAWN_ATTEMPTED.load(std::sync::atomic::Ordering::SeqCst)
++        && let Some(cmd) = launch_command_from_args()
++    {
++        eprintln!("cos-cli: {e} (starting the command without resizing)");
++        match std::process::Command::new(&cmd[0]).args(&cmd[1..]).spawn() {
++            Ok(_) => std::process::exit(0),
++            Err(err) => {
++                eprintln!("Error: failed to launch {:?}: {err}", cmd[0]);
++                std::process::exit(1);
++            }
++        }
++    }
++    eprintln!("Error: {e}");
++    let code = if e.downcast_ref::<Unsupported>().is_some() {
++        EXIT_UNSUPPORTED
++    } else {
++        1
++    };
++    std::process::exit(code);
 +}
 +
  #[derive(Debug)]
  struct InfoArgs {
      json: bool,
-@@ -228,6 +395,8 @@ enum Command {
+@@ -228,6 +457,8 @@ enum Command {
      Move(MoveArgs),
      Activate(ActivateArgs),
      State(StateArgs),
@@ -243,9 +305,12 @@ index dec5d28..9cd2076 100644
  }
  
  fn find_apps<T: AppFinderArgs>(
-@@ -284,7 +453,15 @@ fn find_apps<T: AppFinderArgs>(
+@@ -282,9 +513,17 @@ fn find_apps<T: AppFinderArgs>(
+     }
+ }
  
- fn main() -> Result<(), Box<dyn std::error::Error>> {
+-fn main() -> Result<(), Box<dyn std::error::Error>> {
++fn run() -> Result<(), Box<dyn std::error::Error>> {
      const VERSION: &str = env!("CARGO_PKG_VERSION");
 -    let mut pargs = pico_args::Arguments::from_env();
 +    // "--" より後ろは起動するアプリの引数なので、cos-cli のオプション解析に渡さない
@@ -260,7 +325,7 @@ index dec5d28..9cd2076 100644
      if pargs.contains(["-v", "--version"]) {
          println!("Version: {}", VERSION);
          return Ok(());
-@@ -374,6 +551,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -374,6 +613,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              Command::State(args)
          }
@@ -332,7 +397,7 @@ index dec5d28..9cd2076 100644
          Some("help") | None => {
              println!("{HELP}");
              return Ok(());
-@@ -391,6 +633,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -391,6 +695,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
      let qh = event_queue.handle();
  
      let mut state = AppState {
@@ -340,13 +405,14 @@ index dec5d28..9cd2076 100644
          cosmic_toplevel_manager: None,
          workspace_group: Vec::new(),
          apps: Vec::new(),
-@@ -628,6 +871,110 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -628,6 +933,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              conn.flush()?;
          }
 +        Command::Geometry(args) => {
++            // 未対応のコンポジタなら、窓を待たずにすぐ終える
++            let manager = geometry_manager(&state)?.clone();
 +            let apps = find_apps(&mut state, &mut event_queue, &args)?;
-+            let manager = geometry_manager(&state)?;
 +            for app in apps {
 +                manager.set_geometry(
 +                    &app.handle,
@@ -365,6 +431,7 @@ index dec5d28..9cd2076 100644
 +
 +            let mut cmd = std::process::Command::new(&args.command[0]);
 +            cmd.args(&args.command[1..]);
++            LAUNCH_SPAWN_ATTEMPTED.store(true, std::sync::atomic::Ordering::SeqCst);
 +            let mut child = cmd.spawn().map_err(|e| {
 +                CliError::new(format!("Failed to launch {:?}: {e}", args.command[0]))
 +            })?;

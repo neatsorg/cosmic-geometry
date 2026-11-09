@@ -58,7 +58,25 @@ pos=""
 if [[ $# -gt 0 && "$1" != "--" ]]; then pos="$1"; shift; fi
 [[ "${1:-}" == "--" ]] && shift
 extra=("$@")
-[[ "$size" =~ ^[0-9]+%?[xX][0-9]+%?$ ]] || die "サイズの形式が違います: $size(例: 1400x900、96%x92%)"
+# サイズの各軸: ピクセル(1〜100000)か割合(1〜100%)。
+# ここで弾かないと、cos-cli が引数の誤りでサイズを当てられないまま毎回警告を出す
+valid_axis() {
+    local v="$1"
+    if [[ "$v" =~ ^([0-9]{1,6})%$ ]]; then
+        (( 10#${BASH_REMATCH[1]} >= 1 && 10#${BASH_REMATCH[1]} <= 100 ))
+    elif [[ "$v" =~ ^[0-9]{1,6}$ ]]; then
+        (( 10#$v >= 1 && 10#$v <= 100000 ))
+    else
+        return 1
+    fi
+}
+# (valid_axis の中の =~ が BASH_REMATCH を上書きするので、先に取り出す)
+size_w="" size_h=""
+if [[ "$size" =~ ^([^xX]+)[xX]([^xX]+)$ ]]; then
+    size_w="${BASH_REMATCH[1]}" size_h="${BASH_REMATCH[2]}"
+fi
+valid_axis "$size_w" && valid_axis "$size_h" \
+    || die "サイズの形式が違います: $size(例: 1400x900、96%x92%。割合は 1〜100%)"
 axis_re='([0-9]+|center|keep|c|k)'
 [[ -z "$pos" || "$pos" =~ ^$axis_re(,$axis_re)?$ ]] || die "位置の形式が違います: $pos(X,Y / center / keep)"
 

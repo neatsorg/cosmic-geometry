@@ -132,6 +132,8 @@ cos-cli launch [-a APP_ID] --size WxH [--pos X,Y|center|keep] [--follow 秒]
   最大化のままにしたいときは `--keep-maximized`。
 - アプリが表示直後に自分でサイズを戻すことがあるので、800ms 後にもう一度適用します(`--reapply`)。
 - `--` より後ろはすべてアプリの引数として渡します。
+- サイズを当てられなくても(改造版でないコンポジタ、引数の誤り、Wayland につながらない等)、
+  警告を出してアプリは必ず起動します。`.desktop` から呼ばれるので、アプリが起動しなくならないようにするためです。
 
 ### cos-cli geometry
 
@@ -141,6 +143,9 @@ cos-cli geometry (-a APP_ID | -i INDEX) --size WxH [--pos X,Y|center|keep] [--wa
 
 `--pos` の既定は `keep`(今の中心を保ってサイズだけ変える)。`cos-cli info` で窓の一覧と app_id を確認できます。
 
+終了コードは、成功なら 0、コンポジタが `set_geometry` に未対応(改造版でない)なら 3(窓を待たずにすぐ返る)、
+それ以外のエラーなら 1 です。スクリプトから「改造版がないときだけ別の方法を使う」といった分岐ができます。
+
 ### cos-desktop-size
 
 ```
@@ -149,6 +154,7 @@ cos-desktop-size --list
 cos-desktop-size --remove <desktop-id>
 ```
 
+サイズは各軸ごとにピクセル(1〜100000)か割合(1〜100%)。
 システムの `.desktop` を `~/.local/share/applications` にコピーし、すべての `Exec`
 (アクションを含む)を `cos-cli launch` 経由に書き換えます。引数は Desktop Entry 仕様どおりに
 引用されます。app_id には `StartupWMClass` か desktop-id を使います。違う場合は
