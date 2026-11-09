@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# .desktop ファイルを ~/.local/share/applications に上書きコピーし、
+# Exec を「cos-cli launch --size WxH -- 元のコマンド」に書き換える。
+#
+# 使い方:
+#   cos-desktop-size <desktop-id> <W>x<H> [<X>,<Y>] [-- <cos-cli launch の追加オプション>]
+#   cos-desktop-size --remove <desktop-id>            元に戻す(上書きを削除)
+#   cos-desktop-size --list                           設定済みの一覧
+#
+# 例: cos-desktop-size org.gnome.TextEditor 1000x750
+#     cos-desktop-size firefox 1400x900 100,50
+#     cos-desktop-size firefox 1400x900 -- --follow 30   (プロファイル選択画面の後の本体にも当てる)
+set -euo pipefail
+
+MARK='X-CosGeometry'
+USER_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+COS_CLI="${COS_CLI:-cos-cli}"
+
+die() { echo "cos-desktop-size: $*" >&2; exit 1; }
+
+# XDG_DATA_DIRS から元の .desktop を探す(ユーザー側の上書きは除く)
+find_system_desktop() {
+    local id="$1" dir
+    IFS=: read -ra dirs <<< "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+    dirs+=("/var/lib/flatpak/exports/share" "$HOME/.local/share/flatpak/exports/share")
+    for dir in "${dirs[@]}"; do
+        if [[ -f "$dir/applications/$id.desktop" ]]; then
+            echo "$dir/applications/$id.desktop"
+            return 0
+        fi
+    done
+    return 1
+}
+
+case "${1:-}" in
+    --list)
+        grep -l "^$MARK=" "$USER_DIR"/*.desktop 2>/dev/null | while read -r f; do
+            printf '%s\t%s\n' "$(basename "$f" .desktop)" "$(grep -m1 "^$MARK=" "$f" | cut -d= -f2-)"
+        done
+        exit 0 ;;
+    --remove)
+        id="${2:?desktop-id を指定してください}"; id="${id%.desktop}"
+        f="$USER_DIR/$id.desktop"
+        [[ -f "$f" ]] || die "$f がありません"
+        grep -q "^$MARK=" "$f" || die "$f は cos-desktop-size が作ったものではないので消しません"
+        rm -- "$f"
+        echo "削除しました: $f"
+        exit 0 ;;
+    ""|-h|--help)
+        sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+        exit 0 ;;
+esac
+
+id="${1%.desktop}"
+size="${2:?サイズ (WxH) を指定してください}"
+shift 2
+pos=""
+if [[ $# -gt 0 && "$1" != "--" ]]; then pos="$1"; shift; fi
+[[ "${1:-}" == "--" ]] && shift
+extra=("$@")
+[[ "$size" =~ ^[0-9]+[xX][0-9]+$ ]] || die "サイズの形式が違います: $size"
+axis_re='([0-9]+|center|keep|c|k)'
+[[ -z "$pos" || "$pos" =~ ^$axis_re(,$axis_re)?$ ]] || die "位置の形式が違います: $pos(X,Y / center / keep)"
+
+src="$(find_system_desktop "$id")" || die "$id.desktop が見つかりません"
+dst="$USER_DIR/$id.desktop"
+if [[ -f "$dst" ]] && ! grep -q "^$MARK=" "$dst"; then
+    die "$dst は手で作られた上書きファイルです。退避してから実行してください"
+fi
+
+# Wayland の app_id は StartupWMClass か desktop-id と一致することが多い
+app_id="$(grep -m1 '^StartupWMClass=' "$src" | cut -d= -f2- || true)"
+[[ -n "$app_id" ]] || app_id="$id"
+
+# Desktop Entry 仕様の引用規則で 1 引数をエンコードする。
+# 予約文字を含めば "..." で囲み \ " ` $ をエスケープ、% は %% に。
+# さらに文字列値のエスケープ規則(引用より先に適用される)で \ を二重にする
+desktop_quote() {
+    local a="$1"
+    case "$a" in
+        ""|*[[:space:]\"\'\\\>\<~\|\&\;\$\*\?\#\(\)\`]*)
+            a="${a//\\/\\\\}"
+            a="${a//\"/\\\"}"
+            a="${a//\`/\\\`}"
+            a="${a//\$/\\\$}"
+            a="\"$a\""
+            ;;
+    esac
+    a="${a//%/%%}"
+    a="${a//\\/\\\\}"
+    printf '%s' "$a"
+}
+
+args=("$COS_CLI" launch -a "$app_id" --size "$size")
+[[ -n "$pos" ]] && args+=(--pos "$pos")
+args+=("${extra[@]}" --)
+prefix=""
+for a in "${args[@]}"; do
+    prefix+="${prefix:+ }$(desktop_quote "$a")"
+done
+
+mkdir -p "$USER_DIR"
+# 全セクション(アクション含む)の Exec を書き換え、DBusActivatable は外す(Exec を経由させるため)
+# awk -v はバックスラッシュを解釈してしまうので ENVIRON で渡す
+CDS_PREFIX="$prefix" CDS_MARK="$MARK" CDS_VAL="$size${pos:+ $pos}${extra[*]:+ ${extra[*]}} (from $src)" awk '
+    /^DBusActivatable=/ { next }
+    /^Exec=/ { print "Exec=" ENVIRON["CDS_PREFIX"] " " substr($0, 6); next }
+    { print }
+    /^\[Desktop Entry\]$/ { print ENVIRON["CDS_MARK"] "=" ENVIRON["CDS_VAL"] }
+' "$src" > "$dst.tmp"
+mv -- "$dst.tmp" "$dst"
+update-desktop-database -q "$USER_DIR" 2>/dev/null || true
+echo "作成しました: $dst"
+grep '^Exec=' "$dst"

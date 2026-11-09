@@ -1,0 +1,51 @@
+diff --git a/unstable/cosmic-toplevel-management-unstable-v1.xml b/unstable/cosmic-toplevel-management-unstable-v1.xml
+index a1c7b3c2e1..7576bad0ce 100644
+--- a/unstable/cosmic-toplevel-management-unstable-v1.xml
++++ b/unstable/cosmic-toplevel-management-unstable-v1.xml
+@@ -28,7 +28,7 @@
+     THIS SOFTWARE.
+   </copyright>
+ 
+-  <interface name="zcosmic_toplevel_manager_v1" version="4">
++  <interface name="zcosmic_toplevel_manager_v1" version="5">
+     <description summary="control open apps">
+       This protocol allows clients such as a taskbar to request the compositor
+       to preform typical actions on open toplevels. The compositor is in all
+@@ -52,6 +52,7 @@
+       <entry name="move_to_workspace" value="6" since="2" summary="move_to_workspace request is available"/>
+       <entry name="sticky" value="7" since="3" summary="set_sticky and unset_sticky requests are available"/>
+       <entry name="move_to_ext_workspace" value="8" since="4" summary="move_to_ext_workspace request is available"/>
++      <entry name="geometry" value="9" since="5" summary="set_geometry request is available"/>
+     </enum>
+ 
+     <event name="capabilities">
+@@ -204,6 +205,29 @@
+       <arg name="output" type="object" interface="wl_output"/>
+     </request>
+ 
++    <request name="set_geometry" since="5">
++      <description summary="request a new size and position for a floating toplevel">
++        Request that a floating toplevel be resized to the given size and
++        optionally moved. The size is the outer size of the window as managed
++        by the compositor (including server-side decorations, if any).
++
++        x and y are relative to the usable area (excluding panels and other
++        exclusive zones) of the output the toplevel is currently on. For each
++        axis, -1 resizes the toplevel around its current center, and -2 (or any
++        smaller value) centers it in the usable area. The result is moved as
++        needed to stay inside the usable area.
++
++        The compositor may clamp the size to the toplevel's min/max size and to
++        the usable area, and is free to ignore the request (e.g. for tiled,
++        maximized or fullscreen toplevels).
++      </description>
++      <arg name="toplevel" type="object" interface="zcosmic_toplevel_handle_v1"/>
++      <arg name="x" type="int"/>
++      <arg name="y" type="int"/>
++      <arg name="width" type="int"/>
++      <arg name="height" type="int"/>
++    </request>
++
+     <enum name="error">
+       <entry name="invalid_rectangle" value="0"
+         summary="the provided rectangle is invalid"/>

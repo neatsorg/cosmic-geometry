@@ -1,0 +1,9 @@
+[Unit]
+Description=cosmic-geometry: rebuild the patched cosmic-comp for the installed version
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/cosmic-geometry/scripts/build.sh --auto
+Nice=19
+IOSchedulingClass=idle

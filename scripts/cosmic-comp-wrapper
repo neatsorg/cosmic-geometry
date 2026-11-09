@@ -1,0 +1,37 @@
+#!/bin/sh
+# cosmic-geometry: cosmic-comp の起動ラッパー(~/.local/bin/cosmic-comp として置く)
+#
+# cosmic-session は cosmic-comp を PATH から探すので、PATH で /usr/bin より前にある
+# ~/.local/bin に置くと、こちらが起動される。
+#   - インストール済みの cosmic-comp と同じ版の改造版があれば、それを起動する
+#   - なければ(パッケージ更新の直後など)公式版を起動し、裏で改造版のビルドを依頼する
+#   - ~/.config/cosmic-geometry/disable があれば、常に公式版を起動する
+# 版がずれた改造版は決して起動しない。
+
+SYSTEM_COMP="${COSMIC_GEOMETRY_SYSTEM_COMP:-/usr/bin/cosmic-comp}"
+LIB="$HOME/.local/lib/cosmic-geometry"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/cosmic-geometry"
+
+installed_version() {
+    v=""
+    if command -v pacman >/dev/null 2>&1; then
+        v="$(pacman -Q cosmic-comp 2>/dev/null | awk '{print $2}')"
+    elif command -v dpkg-query >/dev/null 2>&1; then
+        v="$(dpkg-query -W -f='${Version}' cosmic-comp 2>/dev/null)"
+    fi
+    v="${v#*:}"
+    printf '%s\n' "${v%%-*}"
+}
+
+if [ ! -e "$CONF/disable" ]; then
+    ver="$(installed_version)"
+    if [ -n "$ver" ] && [ -x "$LIB/$ver/cosmic-comp" ]; then
+        exec "$LIB/$ver/cosmic-comp" "$@"
+    fi
+    # 合う改造版がない: 裏でビルドを始めておく(次のログインから有効)
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user start --no-block cosmic-geometry-rebuild.service >/dev/null 2>&1 || true
+    fi
+fi
+
+exec "$SYSTEM_COMP" "$@"

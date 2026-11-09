@@ -1,0 +1,241 @@
+diff --git a/src/shell/layout/floating/mod.rs b/src/shell/layout/floating/mod.rs
+index 95d7264..0b602cf 100644
+--- a/src/shell/layout/floating/mod.rs
++++ b/src/shell/layout/floating/mod.rs
+@@ -1669,6 +1669,82 @@ impl FloatingLayout {
+         }
+     }
+ 
++    /// 外部(toplevel-management の set_geometry)からのサイズ・位置変更。
++    /// `position` は出力の利用可能領域(パネル等を除く)からの相対座標。軸ごとに
++    /// Keep なら現在の中心を保ってサイズを変え、Center なら利用可能領域の中央に置く。
++    /// 最大化中・全画面中は何もしない。
++    pub fn set_window_geometry(
++        &mut self,
++        mapped: &CosmicMapped,
++        position: (GeometryAxis, GeometryAxis),
++        size: Size<i32, Logical>,
++    ) -> bool {
++        if mapped.is_maximized(true) || mapped.is_fullscreen(true) {
++            return false;
++        }
++        let Some(current) = self.space.element_geometry(mapped).map(RectExt::as_local) else {
++            return false; // このレイヤーにないウィンドウ
++        };
++
++        let output = self.space.outputs().next().unwrap().clone();
++        let zone = layer_map_for_output(&output)
++            .non_exclusive_zone()
++            .as_local();
++
++        // 最小・最大サイズと利用可能領域に収める
++        let (min_size, max_size) = (mapped.min_size(), mapped.max_size());
++        let min_w = min_size.map(|s| s.w).filter(|w| *w > 0).unwrap_or(1);
++        let min_h = min_size.map(|s| s.h).filter(|h| *h > 0).unwrap_or(1);
++        let max_w = max_size.map(|s| s.w).filter(|w| *w > 0).unwrap_or(i32::MAX);
++        let max_h = max_size.map(|s| s.h).filter(|h| *h > 0).unwrap_or(i32::MAX);
++        let w = size.w.clamp(min_w, max_w.max(min_w)).min(zone.size.w);
++        let h = size.h.clamp(min_h, max_h.max(min_h)).min(zone.size.h);
++
++        // 中心の基準にするサイズ。表示直後はアプリの描画(committed)がまだ古いサイズのことがあるので、
++        // コンポジタが最後に指示したサイズ(pending)を優先する
++        let base_size = mapped
++            .pending_size()
++            .filter(|s| s.w > 0 && s.h > 0)
++            .map(SizeExt::as_local)
++            .unwrap_or(current.size);
++
++        // 位置: 指定があれば利用可能領域基準、なければ現在の中心を保つ。はみ出さないよう寄せる
++        let mut x = match position.0 {
++            GeometryAxis::At(x) => zone.loc.x.saturating_add(x),
++            GeometryAxis::Keep => current.loc.x + (base_size.w - w) / 2,
++            GeometryAxis::Center => zone.loc.x + (zone.size.w - w) / 2,
++        };
++        let mut y = match position.1 {
++            GeometryAxis::At(y) => zone.loc.y.saturating_add(y),
++            GeometryAxis::Keep => current.loc.y + (base_size.h - h) / 2,
++            GeometryAxis::Center => zone.loc.y + (zone.size.h - h) / 2,
++        };
++        x = x.min(zone.loc.x + zone.size.w - w).max(zone.loc.x);
++        y = y.min(zone.loc.y + zone.size.h - h).max(zone.loc.y);
++
++        let geometry = Rectangle::<i32, Local>::new((x, y).into(), (w, h).into());
++
++        // 隅へのスナップ状態は解除する
++        if mapped.floating_tiled.lock().unwrap().take().is_some() {
++            mapped.set_tiled(false);
++        }
++        mapped.moved_since_mapped.store(true, Ordering::SeqCst);
++        mapped.set_geometry(geometry.to_global(&output));
++        mapped.configure();
++
++        self.animations.insert(
++            mapped.clone(),
++            Animation::Tiled {
++                start: Instant::now(),
++                previous_geometry: current,
++            },
++        );
++        self.space
++            .map_element(mapped.clone(), geometry.loc.as_logical(), false);
++        self.space.refresh();
++        true
++    }
++
+     pub fn snap_to_corner(&self, mapped: &CosmicMapped, corners: &TiledCorners) {
+         *mapped.floating_tiled.lock().unwrap() = Some(*corners);
+         mapped.set_tiled(true);
+@@ -1691,3 +1767,25 @@ impl FloatingLayout {
+         (g.0 as i32, g.1 as i32)
+     }
+ }
++
++/// set_geometry の位置指定(軸ごと)
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum GeometryAxis {
++    /// 利用可能領域からの相対座標
++    At(i32),
++    /// 現在の中心を保つ
++    Keep,
++    /// 利用可能領域の中央
++    Center,
++}
++
++impl GeometryAxis {
++    /// プロトコルの値から変換する(0 以上 = 座標、-1 = Keep、-2 以下 = Center)
++    pub fn from_protocol(v: i32) -> Self {
++        match v {
++            v if v >= 0 => GeometryAxis::At(v),
++            -1 => GeometryAxis::Keep,
++            _ => GeometryAxis::Center,
++        }
++    }
++}
+diff --git a/src/state.rs b/src/state.rs
+index 86f5e23..dbbe685 100644
+--- a/src/state.rs
++++ b/src/state.rs
+@@ -756,6 +756,7 @@ impl State {
+                 ManagementCapabilities::Maximize,
+                 ManagementCapabilities::Minimize,
+                 ManagementCapabilities::MoveToWorkspace,
++                ManagementCapabilities::Geometry,
+             ],
+             client_not_sandboxed,
+         );
+diff --git a/src/wayland/handlers/toplevel_management.rs b/src/wayland/handlers/toplevel_management.rs
+index b1616bc..fa441cd 100644
+--- a/src/wayland/handlers/toplevel_management.rs
++++ b/src/wayland/handlers/toplevel_management.rs
+@@ -245,6 +245,44 @@ impl ToplevelManagementHandler for State {
+         }
+     }
+ 
++    fn set_geometry(
++        &mut self,
++        _dh: &DisplayHandle,
++        window: &<Self as ToplevelInfoHandler>::Window,
++        x: i32,
++        y: i32,
++        width: i32,
++        height: i32,
++    ) {
++        let mut shell = self.common.shell.write();
++        let Some(mapped) = shell.element_for_surface(window).cloned() else {
++            return;
++        };
++        let position = (
++            crate::shell::layout::floating::GeometryAxis::from_protocol(x),
++            crate::shell::layout::floating::GeometryAxis::from_protocol(y),
++        );
++        let size = Size::from((width, height));
++
++        // 通常のワークスペースのフローティングレイヤー(タイル中のウィンドウは対象外)
++        if let Some(workspace) = shell.space_for_mut(&mapped) {
++            if workspace.is_floating(window) {
++                workspace
++                    .floating_layer
++                    .set_window_geometry(&mapped, position, size);
++            }
++            return;
++        }
++        // 全ワークスペース表示(sticky)のウィンドウ
++        for set in shell.workspaces.sets.values_mut() {
++            if set.sticky_layer.mapped().any(|m| m == &mapped) {
++                set.sticky_layer
++                    .set_window_geometry(&mapped, position, size);
++                return;
++            }
++        }
++    }
++
+     fn unset_sticky(
+         &mut self,
+         _dh: &DisplayHandle,
+diff --git a/src/wayland/protocols/toplevel_management.rs b/src/wayland/protocols/toplevel_management.rs
+index f252fde..630397a 100644
+--- a/src/wayland/protocols/toplevel_management.rs
++++ b/src/wayland/protocols/toplevel_management.rs
+@@ -62,6 +62,17 @@ where
+     fn minimize(&mut self, dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {}
+     fn unminimize(&mut self, dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {}
+     fn set_sticky(&mut self, dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {}
++    /// フローティングウィンドウのサイズと位置を変更する(x/y が負なら現在位置を維持)
++    fn set_geometry(
++        &mut self,
++        dh: &DisplayHandle,
++        window: &<Self as ToplevelInfoHandler>::Window,
++        x: i32,
++        y: i32,
++        width: i32,
++        height: i32,
++    ) {
++    }
+     fn unset_sticky(&mut self, dh: &DisplayHandle, window: &<Self as ToplevelInfoHandler>::Window) {
+     }
+     fn move_to_workspace(
+@@ -116,7 +127,7 @@ impl ToplevelManagementState {
+         F: for<'a> Fn(&'a Client) -> bool + Send + Sync + 'static,
+     {
+         let global = dh.create_global::<D, ZcosmicToplevelManagerV1, _>(
+-            4,
++            5,
+             ToplevelManagerGlobalData {
+                 filter: Box::new(client_filter),
+             },
+@@ -151,10 +162,13 @@ where
+         data_init: &mut DataInit<'_, D>,
+     ) {
+         let instance = data_init.init(resource, ());
++        let version = instance.version();
+         let capabilities = state
+             .toplevel_management_state()
+             .capabilities
+             .iter()
++            // geometry は v5 から。それより古い版で bind したクライアントには通知しない
++            .filter(|cap| version >= 5 || **cap != ManagementCapabilities::Geometry)
+             .flat_map(|cap| (*cap as u32).to_ne_bytes())
+             .collect::<Vec<u8>>();
+ 
+@@ -248,6 +262,21 @@ where
+                     }
+                 }
+             }
++            zcosmic_toplevel_manager_v1::Request::SetGeometry {
++                toplevel,
++                x,
++                y,
++                width,
++                height,
++            } => {
++                // 幅・高さが正でなければ無視する
++                if width > 0
++                    && height > 0
++                    && let Some(window) = window_from_handle(toplevel)
++                {
++                    state.set_geometry(dh, &window, x, y, width, height);
++                }
++            }
+             zcosmic_toplevel_manager_v1::Request::MoveToWorkspace { .. } => {}
+             zcosmic_toplevel_manager_v1::Request::MoveToExtWorkspace {
+                 toplevel,

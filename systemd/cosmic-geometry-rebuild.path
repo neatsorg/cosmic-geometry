@@ -1,0 +1,10 @@
+[Unit]
+Description=cosmic-geometry: watch for cosmic-comp package updates
+
+[Path]
+# パッケージ更新で /usr/bin/cosmic-comp が置き換わったら作り直す
+PathChanged=/usr/bin/cosmic-comp
+Unit=cosmic-geometry-rebuild.service
+
+[Install]
+WantedBy=default.target
