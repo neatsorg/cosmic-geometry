@@ -116,6 +116,8 @@ cosmic-comp は `rust-toolchain.toml` で Rust の版を指定しています。
 
 ### cos-cli launch
 
+各サブコマンドの書き方は `cos-cli <サブコマンド> --help`(または `-h`)で表示できます。
+
 ```
 cos-cli launch [-a APP_ID] --size WxH [--pos X,Y|center|keep] [--follow 秒]
                [--timeout 秒] [--reapply ミリ秒] [--keep-maximized] -- コマンド [引数...]

@@ -29,7 +29,7 @@ index 4e0495e..686a4e4 100644
                  if let Some(info) = app_data.apps.iter_mut().find(|t| &t.handle == toplevel) {
                      info.title = Some(title);
 diff --git a/src/main.rs b/src/main.rs
-index dec5d28..34418a9 100644
+index dec5d28..b97a046 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -21,6 +21,8 @@ Commands:
@@ -82,7 +82,7 @@ index dec5d28..34418a9 100644
  Options for 'info':
    --json                        Output in JSON format
  
-@@ -62,6 +98,11 @@ Examples:
+@@ -62,6 +98,12 @@ Examples:
    cos-cli activate -i 0
    cos-cli state -i 0 --maximize
    cos-cli state --app-id firefox --sticky --fullscreen
@@ -91,10 +91,11 @@ index dec5d28..34418a9 100644
 +  cos-cli geometry -a fresh-editor --size 96%x92% --pos center
 +  cos-cli launch -a org.gnome.gedit --size 900x700 -- gedit
 +  cos-cli launch -a firefox --size 1400x900 --follow 30 -- firefox
++  cos-cli launch -a org.wezfurlong.wezterm --size 70%x80% --pos 0,0 -- wezterm start
  ";
  
  struct CliError(String);
-@@ -103,6 +144,7 @@ impl From<&str> for CliError {
+@@ -103,6 +145,7 @@ impl From<&str> for CliError {
  }
  
  struct AppState {
@@ -102,7 +103,7 @@ index dec5d28..34418a9 100644
      workspace_group: Vec<Vec<(String, ext_workspace_handle_v1::ExtWorkspaceHandleV1)>>,
      cosmic_toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
      outputs: Vec<(wl_output::WlOutput, String)>,
-@@ -218,6 +260,193 @@ impl AppFinderArgs for StateArgs {
+@@ -218,6 +261,237 @@ impl AppFinderArgs for StateArgs {
      }
  }
  
@@ -236,6 +237,50 @@ index dec5d28..34418a9 100644
 +static LAUNCH_SPAWN_ATTEMPTED: std::sync::atomic::AtomicBool =
 +    std::sync::atomic::AtomicBool::new(false);
 +
++/// HELP からサブコマンドの説明・終了コード・使用例を抜き出す
++fn subcommand_help(sub: &str) -> String {
++    let lines: Vec<&str> = HELP.lines().collect();
++    let header = format!("Options for '{sub}'");
++    let Some(start) = lines.iter().position(|l| l.starts_with(&header)) else {
++        return HELP.to_string();
++    };
++    // 次の空行までがそのサブコマンドの説明
++    let end = lines[start..]
++        .iter()
++        .position(|l| l.is_empty())
++        .map_or(lines.len(), |i| start + i);
++    let usage_tail = if sub == "launch" {
++        " -- <COMMAND> [ARGS...]"
++    } else {
++        ""
++    };
++    let mut out = format!("Usage: cos-cli {sub} [OPTIONS]{usage_tail}\n\n");
++    for l in &lines[start..end] {
++        out.push_str(l);
++        out.push('\n');
++    }
++    // 終了コードの説明は geometry / launch に関係する
++    if matches!(sub, "geometry" | "launch")
++        && let Some(i) = lines.iter().position(|l| l.starts_with("Exit status:"))
++    {
++        out.push('\n');
++        for l in lines[i..].iter().take_while(|l| !l.is_empty()) {
++            out.push_str(l);
++            out.push('\n');
++        }
++    }
++    let prefix = format!("  cos-cli {sub} ");
++    let examples: Vec<&&str> = lines.iter().filter(|l| l.starts_with(&prefix)).collect();
++    if !examples.is_empty() {
++        out.push_str("\nExamples:\n");
++        for l in examples {
++            out.push_str(l);
++            out.push('\n');
++        }
++    }
++    out.trim_end().to_string()
++}
++
 +/// manager が set_geometry(v5)に対応しているか確認して返す
 +fn geometry_manager(
 +    state: &AppState,
@@ -296,7 +341,7 @@ index dec5d28..34418a9 100644
  #[derive(Debug)]
  struct InfoArgs {
      json: bool,
-@@ -228,6 +457,8 @@ enum Command {
+@@ -228,6 +502,8 @@ enum Command {
      Move(MoveArgs),
      Activate(ActivateArgs),
      State(StateArgs),
@@ -305,7 +350,7 @@ index dec5d28..34418a9 100644
  }
  
  fn find_apps<T: AppFinderArgs>(
-@@ -282,9 +513,17 @@ fn find_apps<T: AppFinderArgs>(
+@@ -282,9 +558,17 @@ fn find_apps<T: AppFinderArgs>(
      }
  }
  
@@ -325,7 +370,22 @@ index dec5d28..34418a9 100644
      if pargs.contains(["-v", "--version"]) {
          println!("Version: {}", VERSION);
          return Ok(());
-@@ -374,6 +613,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -292,6 +576,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+ 
+     let subcommand = pargs.subcommand()?;
+ 
++    // "cos-cli <サブコマンド> --help / -h" はそのサブコマンドの説明だけを出す
++    if let Some(sub) = subcommand.as_deref()
++        && pargs.contains(["-h", "--help"])
++    {
++        println!("{}", subcommand_help(sub));
++        return Ok(());
++    }
++
+     let command = match subcommand.as_deref() {
+         Some("info") => Command::Info(InfoArgs {
+             json: pargs.contains("--json"),
+@@ -374,6 +666,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              Command::State(args)
          }
@@ -397,7 +457,7 @@ index dec5d28..34418a9 100644
          Some("help") | None => {
              println!("{HELP}");
              return Ok(());
-@@ -391,6 +695,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -391,6 +748,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
      let qh = event_queue.handle();
  
      let mut state = AppState {
@@ -405,7 +465,7 @@ index dec5d28..34418a9 100644
          cosmic_toplevel_manager: None,
          workspace_group: Vec::new(),
          apps: Vec::new(),
-@@ -628,6 +933,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
+@@ -628,6 +986,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
  
              conn.flush()?;
          }
