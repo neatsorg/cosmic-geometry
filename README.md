@@ -81,7 +81,7 @@ set_geometry(toplevel, x, y, width, height)   # since 5
 ## インストール
 
 ```sh
-git clone <このリポジトリ>
+git clone https://github.com/neatsorg/cosmic-geometry.git
 cd cosmic-geometry
 scripts/install.sh
 ```
